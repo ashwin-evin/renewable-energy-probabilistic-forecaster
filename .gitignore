@@ -218,3 +218,6 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Ignore trained machine learning model artifacts
+models/
