@@ -1,6 +1,7 @@
 import os
 import io
 import boto3
+import joblib
 import numpy as np
 import pandas as pd
 import lightgbm as lgb
@@ -50,32 +51,29 @@ def load_gold_data():
     full_df = full_df.sort_values('timestamp').reset_index(drop=True)
     return full_df
 
-def train_wind_forecaster():
-    df = load_gold_data()
+def train_and_evaluate_model(df, target_col, model_name):
+    print(f"\n--- Training 24-Hour Ahead Forecast Model for: {target_col} ---")
     
-    # Define forecasting horizon: Predict wind_power_index 24 hours ahead
-    horizon_hours = 24
-    df['target_wind_power'] = df['wind_power_index'].shift(-horizon_hours)
+    # Copy dataframe to avoid mutating shared state
+    data = df.copy()
     
-    # Drop rows where target is NaN (the final 24 hours of the dataset)
-    df = df.dropna(subset=['target_wind_power']).reset_index(drop=True)
+    # Create 24-hour ahead target variable
+    data['target'] = data[target_col].shift(-24)
+    data = data.dropna(subset=['target']).reset_index(drop=True)
     
-    # Define feature columns (exclude timestamps, target variables, and raw labels to prevent leakage)
-    exclude_cols = ['timestamp', 'target_wind_power', 'wind_power_index', 'solar_power_index']
-    feature_cols = [col for col in df.columns if col not in exclude_cols]
+    # Define features (exclude timestamps and all potential targets/raw indices to prevent leakage)
+    exclude_cols = ['timestamp', 'target', 'wind_power_index', 'solar_power_index']
+    feature_cols = [col for col in data.columns if col not in exclude_cols]
     
-    print(f"Features used for training ({len(feature_cols)}): {feature_cols}")
-    
-    X = df[feature_cols]
-    y = df['target_wind_power']
+    X = data[feature_cols]
+    y = data['target']
     
     # Chronological Train/Test Split (80% train, 20% test)
-    split_idx = int(len(df) * 0.8)
+    split_idx = int(len(data) * 0.8)
     X_train, X_test = X.iloc[:split_idx], X.iloc[split_idx:]
     y_train, y_test = y.iloc[:split_idx], y.iloc[split_idx:]
     
-    print(f"Training set size: {X_train.shape[0]} rows")
-    print(f"Test set size:     {X_test.shape[0]} rows")
+    print(f"Training set: {X_train.shape[0]} rows | Test set: {X_test.shape[0]} rows")
     
     # Initialize LightGBM Regressor
     model = lgb.LGBMRegressor(
@@ -87,27 +85,40 @@ def train_wind_forecaster():
         n_jobs=-1
     )
     
-    print("\nTraining LightGBM model for 24-hour ahead wind power forecasting...")
     model.fit(
         X_train, y_train,
         eval_X=X_test,
         eval_y=y_test,
-        callbacks=[lgb.early_stopping(stopping_rounds=50)]
+        callbacks=[lgb.early_stopping(stopping_rounds=50, verbose=False)]
     )
     
-    # Evaluate on the unseen Test Set
+    # Evaluate performance
     y_pred = model.predict(X_test)
     rmse = np.sqrt(mean_squared_error(y_test, y_pred))
     mae = mean_absolute_error(y_test, y_pred)
     
-    print("\n==============================")
-    print(" MODEL EVALUATION RESULTS ")
-    print("==============================")
-    print(f"Root Mean Square Error (RMSE): {rmse:.4f}")
-    print(f"Mean Absolute Error (MAE):     {mae:.4f}")
-    print("==============================\n")
+    print(f"[{model_name}] Results:")
+    print(f"  - RMSE: {rmse:.4f}")
+    print(f"  - MAE:  {mae:.4f}")
     
-    return model, feature_cols
+    # Save model artifact locally
+    os.makedirs("models", exist_ok=True)
+    model_path = f"models/{model_name}.pkl"
+    joblib.dump((model, feature_cols), model_path)
+    print(f"Saved model artifact to: {model_path}")
+    
+    return model, rmse, mae
+
+def main():
+    df = load_gold_data()
+    
+    # 1. Train Wind Power Forecaster
+    train_and_evaluate_model(df, target_col='wind_power_index', model_name='wind_forecaster')
+    
+    # 2. Train Solar Power Forecaster
+    train_and_evaluate_model(df, target_col='solar_power_index', model_name='solar_forecaster')
+    
+    print("\nAll models successfully trained, evaluated, and saved to disk!")
 
 if __name__ == "__main__":
-    train_wind_forecaster()
+    main()
