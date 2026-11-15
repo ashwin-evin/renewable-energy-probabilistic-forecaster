@@ -90,7 +90,8 @@ def train_wind_forecaster():
     print("\nTraining LightGBM model for 24-hour ahead wind power forecasting...")
     model.fit(
         X_train, y_train,
-        eval_set=[(X_test, y_test)],
+        eval_X=X_test,
+        eval_y=y_test,
         callbacks=[lgb.early_stopping(stopping_rounds=50)]
     )
     
